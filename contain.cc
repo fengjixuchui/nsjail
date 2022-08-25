@@ -119,6 +119,22 @@ static bool containCPU(nsjconf_t* nsjconf) {
 	return cpu::initCpu(nsjconf);
 }
 
+static bool containTSC(nsjconf_t* nsjconf) {
+	if (nsjconf->disable_tsc) {
+#if defined(__x86_64__) || defined(__i386__)
+		if (prctl(PR_SET_TSC, PR_TSC_SIGSEGV, 0, 0, 0) == -1) {
+			PLOG_E("prctl(PR_SET_TSC, PR_TSC_SIGSEGV)");
+			return false;
+		}
+#else  /* defined(__x86_64__) || defined(__i386__) */
+		LOG_W(
+		    "prctl(PR_SET_TSC, PR_TSC_SIGSEGV) requested, but it's supported under "
+		    "x86/x86-64 CPU architectures only. Ignoring it!");
+#endif /* defined(__x86_64__) || defined(__i386__) */
+	}
+	return true;
+}
+
 static bool containSetLimits(nsjconf_t* nsjconf) {
 	if (nsjconf->disable_rl) {
 		return true;
@@ -158,6 +174,21 @@ static bool containSetLimits(nsjconf_t* nsjconf) {
 	rl.rlim_cur = rl.rlim_max = nsjconf->rl_stack;
 	if (setrlimit64(RLIMIT_STACK, &rl) == -1) {
 		PLOG_E("setrlimit64(0, RLIMIT_STACK, %" PRIu64 ")", nsjconf->rl_stack);
+		return false;
+	}
+	rl.rlim_cur = rl.rlim_max = nsjconf->rl_mlock;
+	if (setrlimit64(RLIMIT_MEMLOCK, &rl) == -1) {
+		PLOG_E("setrlimit64(0, RLIMIT_MEMLOCK, %" PRIu64 ")", nsjconf->rl_mlock);
+		return false;
+	}
+	rl.rlim_cur = rl.rlim_max = nsjconf->rl_rtpr;
+	if (setrlimit64(RLIMIT_RTPRIO, &rl) == -1) {
+		PLOG_E("setrlimit64(0, RLIMIT_RTPRIO, %" PRIu64 ")", nsjconf->rl_rtpr);
+		return false;
+	}
+	rl.rlim_cur = rl.rlim_max = nsjconf->rl_msgq;
+	if (setrlimit64(RLIMIT_MSGQUEUE, &rl) == -1) {
+		PLOG_E("setrlimit64(0, RLIMIT_MSGQUEUE , %" PRIu64 ")", nsjconf->rl_msgq);
 		return false;
 	}
 	return true;
@@ -311,6 +342,7 @@ bool containProc(nsjconf_t* nsjconf) {
 	/* */
 	/* As non-root */
 	RETURN_ON_FAILURE(containCPU(nsjconf));
+	RETURN_ON_FAILURE(containTSC(nsjconf));
 	RETURN_ON_FAILURE(containSetLimits(nsjconf));
 	RETURN_ON_FAILURE(containPrepareEnv(nsjconf));
 	RETURN_ON_FAILURE(containMakeFdsCOE(nsjconf));

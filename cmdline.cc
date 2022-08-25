@@ -43,6 +43,7 @@
 #include <unistd.h>
 
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -76,6 +77,7 @@ struct custom_option custom_opts[] = {
     { { "exec_file", required_argument, NULL, 'x' }, "File to exec (default: argv[0])" },
     { { "execute_fd", no_argument, NULL, 0x0607 }, "Use execveat() to execute a file-descriptor instead of executing the binary path. In such case argv[0]/exec_file denotes a file path before mount namespacing" },
     { { "chroot", required_argument, NULL, 'c' }, "Directory containing / of the jail (default: none)" },
+    { { "no_pivotroot", no_argument, NULL, 0x600 }, "When creating a mount namespace, use mount(MS_MOVE) and chroot rather than pivot_root. Usefull when pivot_root is disallowed (e.g. initramfs). Note: escapable is some configuration" },
     { { "rw", no_argument, NULL, 0x601 }, "Mount chroot dir (/) R/W (default: R/O)" },
     { { "user", required_argument, NULL, 'u' }, "Username/uid of processes inside the jail (default: your current uid). You can also use inside_ns_uid:outside_ns_uid:count convention here. Can be specified multiple times" },
     { { "group", required_argument, NULL, 'g' }, "Groupname/gid of processes inside the jail (default: your current gid). You can also use inside_ns_gid:global_ns_gid:count convention here. Can be specified multiple times" },
@@ -83,6 +85,7 @@ struct custom_option custom_opts[] = {
     { { "cwd", required_argument, NULL, 'D' }, "Directory in the namespace the process will run (default: '/')" },
     { { "port", required_argument, NULL, 'p' }, "TCP port to bind to (enables MODE_LISTEN_TCP) (default: 0)" },
     { { "bindhost", required_argument, NULL, 0x604 }, "IP address to bind the port to (only in [MODE_LISTEN_TCP]), (default: '::')" },
+    { { "max_conns", required_argument, NULL, 0x608 }, "Maximum number of connections across all IPs (only in [MODE_LISTEN_TCP]), (default: 0 (unlimited))" },
     { { "max_conns_per_ip", required_argument, NULL, 'i' }, "Maximum number of connections per one IP (only in [MODE_LISTEN_TCP]), (default: 0 (unlimited))" },
     { { "log", required_argument, NULL, 'l' }, "Log file (default: use log_fd)" },
     { { "log_fd", required_argument, NULL, 'L' }, "Log FD (default: 2)" },
@@ -101,13 +104,16 @@ struct custom_option custom_opts[] = {
     { { "skip_setsid", no_argument, NULL, 0x0504 }, "Don't call setsid(), allows for terminal signal handling in the sandboxed process. Dangerous" },
     { { "pass_fd", required_argument, NULL, 0x0505 }, "Don't close this FD before executing the child process (can be specified multiple times), by default: 0/1/2 are kept open" },
     { { "disable_no_new_privs", no_argument, NULL, 0x0507 }, "Don't set the prctl(NO_NEW_PRIVS, 1) (DANGEROUS)" },
-    { { "rlimit_as", required_argument, NULL, 0x0201 }, "RLIMIT_AS in MB, 'max' or 'hard' for the current hard limit, 'def' or 'soft' for the current soft limit, 'inf' for RLIM64_INFINITY (default: 512)" },
+    { { "rlimit_as", required_argument, NULL, 0x0201 }, "RLIMIT_AS in MB, 'max' or 'hard' for the current hard limit, 'def' or 'soft' for the current soft limit, 'inf' for RLIM64_INFINITY (default: 4096)" },
     { { "rlimit_core", required_argument, NULL, 0x0202 }, "RLIMIT_CORE in MB, 'max' or 'hard' for the current hard limit, 'def' or 'soft' for the current soft limit, 'inf' for RLIM64_INFINITY (default: 0)" },
     { { "rlimit_cpu", required_argument, NULL, 0x0203 }, "RLIMIT_CPU, 'max' or 'hard' for the current hard limit, 'def' or 'soft' for the current soft limit, 'inf' for RLIM64_INFINITY (default: 600)" },
     { { "rlimit_fsize", required_argument, NULL, 0x0204 }, "RLIMIT_FSIZE in MB, 'max' or 'hard' for the current hard limit, 'def' or 'soft' for the current soft limit, 'inf' for RLIM64_INFINITY (default: 1)" },
     { { "rlimit_nofile", required_argument, NULL, 0x0205 }, "RLIMIT_NOFILE, 'max' or 'hard' for the current hard limit, 'def' or 'soft' for the current soft limit, 'inf' for RLIM64_INFINITY (default: 32)" },
     { { "rlimit_nproc", required_argument, NULL, 0x0206 }, "RLIMIT_NPROC, 'max' or 'hard' for the current hard limit, 'def' or 'soft' for the current soft limit, 'inf' for RLIM64_INFINITY (default: 'soft')" },
     { { "rlimit_stack", required_argument, NULL, 0x0207 }, "RLIMIT_STACK in MB, 'max' or 'hard' for the current hard limit, 'def' or 'soft' for the current soft limit, 'inf' for RLIM64_INFINITY (default: 'soft')" },
+    { { "rlimit_memlock", required_argument, NULL, 0x0209 }, "RLIMIT_MEMLOCK in KB, 'max' or 'hard' for the current hard limit, 'def' or 'soft' for the current soft limit, 'inf' for RLIM64_INFINITY (default: 'soft')" },
+    { { "rlimit_rtprio", required_argument, NULL, 0x0210 }, "RLIMIT_RTPRIO, 'max' or 'hard' for the current hard limit, 'def' or 'soft' for the current soft limit, 'inf' for RLIM64_INFINITY (default: 'soft')" },
+    { { "rlimit_msgqueue", required_argument, NULL, 0x0211 }, "RLIMIT_MSGQUEUE in bytes, 'max' or 'hard' for the current hard limit, 'def' or 'soft' for the current soft limit, 'inf' for RLIM64_INFINITY (default: 'soft')" },
     { { "disable_rlimits", no_argument, NULL, 0x0208 }, "Disable all rlimits, default to limits set by parent" },
     { { "persona_addr_compat_layout", no_argument, NULL, 0x0301 }, "personality(ADDR_COMPAT_LAYOUT)" },
     { { "persona_mmap_page_zero", no_argument, NULL, 0x0302 }, "personality(MMAP_PAGE_ZERO)" },
@@ -121,6 +127,7 @@ struct custom_option custom_opts[] = {
     { { "disable_clone_newipc", no_argument, NULL, 0x0405 }, "Don't use CLONE_NEWIPC" },
     { { "disable_clone_newuts", no_argument, NULL, 0x0406 }, "Don't use CLONE_NEWUTS" },
     { { "disable_clone_newcgroup", no_argument, NULL, 0x0407 }, "Don't use CLONE_NEWCGROUP. Might be required for kernel versions < 4.6" },
+    { { "enable_clone_newtime", no_argument, NULL, 0x0408 }, "Use CLONE_NEWTIME. Supported with kernel versions >= 5.3" },
     { { "uid_mapping", required_argument, NULL, 'U' }, "Add a custom uid mapping of the form inside_uid:outside_uid:count. Setting this requires newuidmap (set-uid) to be present" },
     { { "gid_mapping", required_argument, NULL, 'G' }, "Add a custom gid mapping of the form inside_gid:outside_gid:count. Setting this requires newgidmap (set-uid) to be present" },
     { { "bindmount_ro", required_argument, NULL, 'R' }, "List of mountpoints to be mounted --bind (ro) inside the container. Can be specified multiple times. Supports 'source' syntax, or 'source:dest'" },
@@ -136,6 +143,8 @@ struct custom_option custom_opts[] = {
     { { "seccomp_log", no_argument, NULL, 0x0902 }, "Use SECCOMP_FILTER_FLAG_LOG. Log all actions except SECCOMP_RET_ALLOW). Supported since kernel version 4.14" },
     { { "nice_level", required_argument, NULL, 0x0903 }, "Set jailed process niceness (-20 is highest -priority, 19 is lowest). By default, set to 19" },
     { { "cgroup_mem_max", required_argument, NULL, 0x0801 }, "Maximum number of bytes to use in the group (default: '0' - disabled)" },
+    { { "cgroup_mem_memsw_max", required_argument, NULL, 0x0804 }, "Maximum number of memory+swap bytes to use (default: '0' - disabled)" },
+    { { "cgroup_mem_swap_max", required_argument, NULL, 0x0805 }, "Maximum number of swap bytes to use (default: '-1' - disabled)" },
     { { "cgroup_mem_mount", required_argument, NULL, 0x0802 }, "Location of memory cgroup FS (default: '/sys/fs/cgroup/memory')" },
     { { "cgroup_mem_parent", required_argument, NULL, 0x0803 }, "Which pre-existing memory cgroup to use as a parent (default: 'NSJAIL')" },
     { { "cgroup_pids_max", required_argument, NULL, 0x0811 }, "Maximum number of pids in a cgroup (default: '0' - disabled)" },
@@ -145,7 +154,7 @@ struct custom_option custom_opts[] = {
     { { "cgroup_net_cls_mount", required_argument, NULL, 0x0822 }, "Location of net_cls cgroup FS (default: '/sys/fs/cgroup/net_cls')" },
     { { "cgroup_net_cls_parent", required_argument, NULL, 0x0823 }, "Which pre-existing net_cls cgroup to use as a parent (default: 'NSJAIL')" },
     { { "cgroup_cpu_ms_per_sec", required_argument, NULL, 0x0831 }, "Number of milliseconds of CPU time per second that the process group can use (default: '0' - no limit)" },
-    { { "cgroup_cpu_mount", required_argument, NULL, 0x0832 }, "Location of cpu cgroup FS (default: '/sys/fs/cgroup/net_cls')" },
+    { { "cgroup_cpu_mount", required_argument, NULL, 0x0832 }, "Location of cpu cgroup FS (default: '/sys/fs/cgroup/cpu')" },
     { { "cgroup_cpu_parent", required_argument, NULL, 0x0833 }, "Which pre-existing cpu cgroup to use as a parent (default: 'NSJAIL')" },
     { { "cgroupv2_mount", required_argument, NULL, 0x0834}, "Location of cgroupv2 directory (default: '/sys/fs/cgroup')"},
     { { "use_cgroupv2", no_argument, NULL, 0x0835}, "Use cgroup v2"},
@@ -156,6 +165,9 @@ struct custom_option custom_opts[] = {
     { { "macvlan_vs_nm", required_argument, NULL, 0x702 }, "Netmask of the 'vs' interface (e.g. \"255.255.255.0\")" },
     { { "macvlan_vs_gw", required_argument, NULL, 0x703 }, "Default GW for the 'vs' interface (e.g. \"192.168.0.1\")" },
     { { "macvlan_vs_ma", required_argument, NULL, 0x705 }, "MAC-address of the 'vs' interface (e.g. \"ba:ad:ba:be:45:00\")" },
+    { { "macvlan_vs_mo", required_argument, NULL, 0x706 }, "Mode of the 'vs' interface. Can be either 'private', 'vepa', 'bridge' or 'passthru' (default: 'private')" },
+    { { "disable_tsc", no_argument, NULL, 0x707 }, "Disable rdtsc and rdtscp instructions. WARNING: To make it effective, you also need to forbid `prctl(PR_SET_TSC, PR_TSC_ENABLE, ...)` in seccomp rules! (x86 and x86_64 only). Dynamic binaries produced by GCC seem to rely on RDTSC, but static ones should work." },
+    { { "forward_signals", no_argument, NULL, 0x708 }, "Forward fatal signals to the child process instead of always using SIKGILL." },
 };
 // clang-format on
 
@@ -198,8 +210,7 @@ void addEnv(nsjconf_t* nsjconf, const std::string& env) {
 	}
 	char* e = getenv(env.c_str());
 	if (!e) {
-		LOG_W("Requested to use the '%s' envar, but it's not set. It'll be ignored",
-		    env.c_str());
+		LOG_W("Requested to use the %s envar, but it's not set. It'll be ignored", QC(env));
 		return;
 	}
 	nsjconf->envs.push_back(std::string(env).append("=").append(e));
@@ -225,18 +236,20 @@ void logParams(nsjconf_t* nsjconf) {
 	}
 
 	LOG_I(
-	    "Jail parameters: hostname:'%s', chroot:'%s', process:'%s', bind:[%s]:%d, "
-	    "max_conns_per_ip:%u, time_limit:%" PRId64
+	    "Jail parameters: hostname:'%s', chroot:%s, process:'%s', bind:[%s]:%d, "
+	    "max_conns:%u, max_conns_per_ip:%u, time_limit:%" PRId64
 	    ", personality:%#lx, daemonize:%s, clone_newnet:%s, "
 	    "clone_newuser:%s, clone_newns:%s, clone_newpid:%s, clone_newipc:%s, clone_newuts:%s, "
-	    "clone_newcgroup:%s, keep_caps:%s, disable_no_new_privs:%s, max_cpus:%zu",
-	    nsjconf->hostname.c_str(), nsjconf->chroot.c_str(),
+	    "clone_newcgroup:%s, clone_newtime:%s, keep_caps:%s, disable_no_new_privs:%s, "
+	    "max_cpus:%zu",
+	    nsjconf->hostname.c_str(), QC(nsjconf->chroot),
 	    nsjconf->exec_file.empty() ? nsjconf->argv[0].c_str() : nsjconf->exec_file.c_str(),
-	    nsjconf->bindhost.c_str(), nsjconf->port, nsjconf->max_conns_per_ip, nsjconf->tlimit,
-	    nsjconf->personality, logYesNo(nsjconf->daemonize), logYesNo(nsjconf->clone_newnet),
-	    logYesNo(nsjconf->clone_newuser), logYesNo(nsjconf->clone_newns),
-	    logYesNo(nsjconf->clone_newpid), logYesNo(nsjconf->clone_newipc),
-	    logYesNo(nsjconf->clone_newuts), logYesNo(nsjconf->clone_newcgroup),
+	    nsjconf->bindhost.c_str(), nsjconf->port, nsjconf->max_conns, nsjconf->max_conns_per_ip,
+	    nsjconf->tlimit, nsjconf->personality, logYesNo(nsjconf->daemonize),
+	    logYesNo(nsjconf->clone_newnet), logYesNo(nsjconf->clone_newuser),
+	    logYesNo(nsjconf->clone_newns), logYesNo(nsjconf->clone_newpid),
+	    logYesNo(nsjconf->clone_newipc), logYesNo(nsjconf->clone_newuts),
+	    logYesNo(nsjconf->clone_newcgroup), logYesNo(nsjconf->clone_newtime),
 	    logYesNo(nsjconf->keep_caps), logYesNo(nsjconf->disable_no_new_privs),
 	    nsjconf->max_cpus);
 
@@ -330,7 +343,7 @@ static bool setupArgv(nsjconf_t* nsjconf, int argc, char** argv, int optind) {
 #endif /* !defined(__NR_execveat) */
 		if ((nsjconf->exec_fd = TEMP_FAILURE_RETRY(
 			 open(nsjconf->exec_file.c_str(), O_RDONLY | O_PATH | O_CLOEXEC))) == -1) {
-			PLOG_W("Couldn't open '%s' file", nsjconf->exec_file.c_str());
+			PLOG_W("Couldn't open %s file", QC(nsjconf->exec_file));
 			return false;
 		}
 	}
@@ -387,6 +400,18 @@ void setupUsers(nsjconf_t* nsjconf) {
 	}
 }
 
+std::string parseMACVlanMode(const char* optarg) {
+	if (strcasecmp(optarg, "private") != 0 && strcasecmp(optarg, "vepa") != 0 &&
+	    strcasecmp(optarg, "bridge") != 0 && strcasecmp(optarg, "passthru") != 0) {
+		LOG_F(
+		    "macvlan mode can only be one of the values: "
+		    "'private'/'vepa'/'bridge'/'passthru' ('%s' "
+		    "provided).",
+		    optarg);
+	}
+	return std::string(optarg);
+}
+
 std::unique_ptr<nsjconf_t> parseArgs(int argc, char* argv[]) {
 	std::unique_ptr<nsjconf_t> nsjconf(new nsjconf_t);
 
@@ -409,26 +434,34 @@ std::unique_ptr<nsjconf_t> parseArgs(int argc, char* argv[]) {
 	nsjconf->rl_nofile = 32ULL;
 	nsjconf->rl_nproc = parseRLimit(RLIMIT_NPROC, "soft", 1);
 	nsjconf->rl_stack = parseRLimit(RLIMIT_STACK, "soft", 1);
+	nsjconf->rl_mlock = parseRLimit(RLIMIT_MEMLOCK, "soft", 1);
+	nsjconf->rl_rtpr = parseRLimit(RLIMIT_RTPRIO, "soft", 1);
+	nsjconf->rl_msgq = parseRLimit(RLIMIT_MSGQUEUE, "soft", 1);
 	nsjconf->disable_rl = false;
 	nsjconf->personality = 0;
 	nsjconf->clone_newnet = true;
 	nsjconf->clone_newuser = true;
 	nsjconf->clone_newns = true;
+	nsjconf->no_pivotroot = false;
 	nsjconf->clone_newpid = true;
 	nsjconf->clone_newipc = true;
 	nsjconf->clone_newuts = true;
 	nsjconf->clone_newcgroup = true;
+	nsjconf->clone_newtime = false;
 	nsjconf->mode = MODE_STANDALONE_ONCE;
 	nsjconf->is_root_rw = false;
 	nsjconf->is_silent = false;
 	nsjconf->stderr_to_null = false;
 	nsjconf->skip_setsid = false;
+	nsjconf->max_conns = 0;
 	nsjconf->max_conns_per_ip = 0;
 	nsjconf->proc_path = "/proc";
 	nsjconf->is_proc_rw = false;
 	nsjconf->cgroup_mem_mount = "/sys/fs/cgroup/memory";
 	nsjconf->cgroup_mem_parent = "NSJAIL";
 	nsjconf->cgroup_mem_max = (size_t)0;
+	nsjconf->cgroup_mem_memsw_max = (size_t)0;
+	nsjconf->cgroup_mem_swap_max = (ssize_t)-1;
 	nsjconf->cgroup_pids_mount = "/sys/fs/cgroup/pids";
 	nsjconf->cgroup_pids_parent = "NSJAIL";
 	nsjconf->cgroup_pids_max = 0U;
@@ -445,9 +478,11 @@ std::unique_ptr<nsjconf_t> parseArgs(int argc, char* argv[]) {
 	nsjconf->iface_vs_nm = "255.255.255.0";
 	nsjconf->iface_vs_gw = "0.0.0.0";
 	nsjconf->iface_vs_ma = "";
+	nsjconf->iface_vs_mo = "private";
+	nsjconf->disable_tsc = false;
+	nsjconf->forward_signals = false;
 	nsjconf->orig_uid = getuid();
 	nsjconf->orig_euid = geteuid();
-	nsjconf->num_cpus = sysconf(_SC_NPROCESSORS_ONLN);
 	nsjconf->seccomp_fprog.filter = NULL;
 	nsjconf->seccomp_fprog.len = 0;
 	nsjconf->seccomp_log = false;
@@ -486,7 +521,7 @@ std::unique_ptr<nsjconf_t> parseArgs(int argc, char* argv[]) {
 			break;
 		case 'C':
 			if (!config::parseFile(nsjconf.get(), optarg)) {
-				LOG_F("Couldn't parse configuration from '%s' file", optarg);
+				LOG_F("Couldn't parse configuration from %s file", QC(optarg));
 			}
 			break;
 		case 'c':
@@ -503,6 +538,9 @@ std::unique_ptr<nsjconf_t> parseArgs(int argc, char* argv[]) {
 		case 0x604:
 			nsjconf->bindhost = optarg;
 			break;
+		case 0x608:
+			nsjconf->max_conns = strtoul(optarg, NULL, 0);
+			break;
 		case 'i':
 			nsjconf->max_conns_per_ip = strtoul(optarg, NULL, 0);
 			break;
@@ -516,13 +554,13 @@ std::unique_ptr<nsjconf_t> parseArgs(int argc, char* argv[]) {
 			nsjconf->daemonize = true;
 			break;
 		case 'v':
-			logs::logLevel(logs::DEBUG);
+			logs::setLogLevel(logs::DEBUG);
 			break;
 		case 'q':
-			logs::logLevel(logs::WARNING);
+			logs::setLogLevel(logs::WARNING);
 			break;
 		case 'Q':
-			logs::logLevel(logs::FATAL);
+			logs::setLogLevel(logs::FATAL);
 			break;
 		case 'e':
 			nsjconf->keep_env = true;
@@ -554,6 +592,15 @@ std::unique_ptr<nsjconf_t> parseArgs(int argc, char* argv[]) {
 			break;
 		case 0x0207:
 			nsjconf->rl_stack = parseRLimit(RLIMIT_STACK, optarg, (1024 * 1024));
+			break;
+		case 0x0209:
+			nsjconf->rl_mlock = parseRLimit(RLIMIT_MEMLOCK, optarg, 1024);
+			break;
+		case 0x0210:
+			nsjconf->rl_rtpr = parseRLimit(RLIMIT_RTPRIO, optarg, 1);
+			break;
+		case 0x0211:
+			nsjconf->rl_msgq = parseRLimit(RLIMIT_MSGQUEUE, optarg, 1);
 			break;
 		case 0x0208:
 			nsjconf->disable_rl = true;
@@ -595,7 +642,7 @@ std::unique_ptr<nsjconf_t> parseArgs(int argc, char* argv[]) {
 			nsjconf->clone_newcgroup = false;
 			break;
 		case 0x0408:
-			nsjconf->clone_newcgroup = true;
+			nsjconf->clone_newtime = true;
 			break;
 		case 0x0501:
 			nsjconf->keep_caps = true;
@@ -625,6 +672,9 @@ std::unique_ptr<nsjconf_t> parseArgs(int argc, char* argv[]) {
 			}
 			nsjconf->caps.push_back(cap);
 		} break;
+		case 0x0600:
+			nsjconf->no_pivotroot = true;
+			break;
 		case 0x0601:
 			nsjconf->is_root_rw = true;
 			break;
@@ -734,7 +784,12 @@ std::unique_ptr<nsjconf_t> parseArgs(int argc, char* argv[]) {
 				dst = src;
 			}
 			std::string fs_type = argFromVec(subopts, 2);
-			std::string options = argFromVec(subopts, 3);
+			std::stringstream optionsStream;
+			optionsStream << argFromVec(subopts, 3);
+			for (std::size_t i = 4; i < subopts.size(); ++i) {
+				optionsStream << ":" << subopts[i];
+			}
+			std::string options = optionsStream.str();
 			if (!mnt::addMountPtTail(nsjconf.get(), src, dst, /* fstype= */ fs_type,
 				/* options= */ options, /* flags= */ 0,
 				/* is_dir= */ mnt::NS_DIR_MAYBE, /* is_mandatory= */ true,
@@ -800,6 +855,15 @@ std::unique_ptr<nsjconf_t> parseArgs(int argc, char* argv[]) {
 		case 0x705:
 			nsjconf->iface_vs_ma = optarg;
 			break;
+		case 0x706:
+			nsjconf->iface_vs_mo = parseMACVlanMode(optarg);
+			break;
+		case 0x707:
+			nsjconf->disable_tsc = true;
+			break;
+		case 0x708:
+			nsjconf->forward_signals = true;
+			break;
 		case 0x801:
 			nsjconf->cgroup_mem_max = (size_t)strtoull(optarg, NULL, 0);
 			break;
@@ -808,6 +872,12 @@ std::unique_ptr<nsjconf_t> parseArgs(int argc, char* argv[]) {
 			break;
 		case 0x803:
 			nsjconf->cgroup_mem_parent = optarg;
+			break;
+		case 0x804:
+			nsjconf->cgroup_mem_memsw_max = (size_t)strtoull(optarg, NULL, 0);
+			break;
+		case 0x805:
+			nsjconf->cgroup_mem_swap_max = (ssize_t)strtoll(optarg, NULL, 0);
 			break;
 		case 0x811:
 			nsjconf->cgroup_pids_max = (unsigned int)strtoul(optarg, NULL, 0);
@@ -871,6 +941,11 @@ std::unique_ptr<nsjconf_t> parseArgs(int argc, char* argv[]) {
 		return nullptr;
 	}
 	setupUsers(nsjconf.get());
+
+	if (nsjconf->cgroup_mem_memsw_max > (size_t)0 &&
+	    nsjconf->cgroup_mem_swap_max >= (ssize_t)0) {
+		LOG_F("cannot set both cgroup_mem_memsw_max and cgroup_mem_swap_max");
+	}
 
 	return nsjconf;
 }
