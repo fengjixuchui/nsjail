@@ -34,10 +34,12 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <memory>
 #include <vector>
 
+#include "cgroup2.h"
 #include "cmdline.h"
 #include "logs.h"
 #include "macros.h"
@@ -48,8 +50,8 @@
 
 namespace nsjail {
 
-static __thread int sigFatal = 0;
-static __thread bool showProc = false;
+static __thread std::atomic<int> sigFatal(0);
+static __thread std::atomic<bool> showProc(false);
 
 static void sigHandler(int sig) {
 	if (sig == SIGALRM || sig == SIGCHLD || sig == SIGPIPE) {
@@ -223,7 +225,7 @@ static int listenMode(nsjconf_t* nsjconf) {
 	for (;;) {
 		if (sigFatal > 0) {
 			subproc::killAndReapAll(
-			    nsjconf, nsjconf->forward_signals ? sigFatal : SIGKILL);
+			    nsjconf, nsjconf->forward_signals ? sigFatal.load() : SIGKILL);
 			logs::logStop(sigFatal);
 			close(listenfd);
 			return EXIT_SUCCESS;
@@ -287,7 +289,7 @@ static int standaloneMode(nsjconf_t* nsjconf) {
 			}
 			if (sigFatal > 0) {
 				subproc::killAndReapAll(
-				    nsjconf, nsjconf->forward_signals ? sigFatal : SIGKILL);
+				    nsjconf, nsjconf->forward_signals ? sigFatal.load() : SIGKILL);
 				logs::logStop(sigFatal);
 				return (128 + sigFatal);
 			}
@@ -341,6 +343,19 @@ int main(int argc, char* argv[]) {
 	if (!nsjail::setTimer(nsjconf.get())) {
 		LOG_F("nsjail::setTimer() failed");
 	}
+
+	if (nsjconf->detect_cgroupv2) {
+		cgroup2::detectCgroupv2(nsjconf.get());
+		LOG_I("Detected cgroups version: %d", nsjconf->use_cgroupv2 ? 2 : 1);
+	}
+
+	if (nsjconf->use_cgroupv2) {
+		if (!cgroup2::setup(nsjconf.get())) {
+			LOG_E("Couldn't setup parent cgroup (cgroupv2)");
+			return -1;
+		}
+	}
+
 	if (!sandbox::preparePolicy(nsjconf.get())) {
 		LOG_F("Couldn't prepare sandboxing policy");
 	}
